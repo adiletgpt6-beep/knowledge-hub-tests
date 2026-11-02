@@ -1,74 +1,106 @@
-name: KnowledgeHub — test import 10 transcripts
+name: KnowledgeHub — import remaining free credits
 on:
   workflow_dispatch:
+    inputs:
+      max_videos:
+        description: Maximum new transcript requests (up to 88)
+        required: true
+        default: '88'
 permissions:
   contents: read
+concurrency:
+  group: knowledgehub-transcript-import
+  cancel-in-progress: false
 jobs:
-  import-test:
+  import:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 50
     steps:
-      - name: Test and import up to 10 missing Russian transcripts
+      - name: Import missing Russian captions and audit quality
         env:
           TRANSCRIPTYT_API_KEY: ${{ secrets.TRANSCRIPTYT_API_KEY }}
           KNOWLEDGEHUB_URL: ${{ secrets.KNOWLEDGEHUB_URL }}
           ADMIN_IMPORT_TOKEN: ${{ secrets.ADMIN_IMPORT_TOKEN }}
+          MAX_VIDEOS: ${{ inputs.max_videos }}
         run: |
           python - <<'PY'
-          import json,os,time,urllib.request,urllib.parse,urllib.error
+          import os,json,time,urllib.request,urllib.parse,urllib.error,statistics
           from pathlib import Path
-          api=os.environ.get("TRANSCRIPTYT_API_KEY","")
+          Path("results").mkdir(exist_ok=True)
+          key=os.environ.get("TRANSCRIPTYT_API_KEY","")
           site=os.environ.get("KNOWLEDGEHUB_URL","").rstrip("/")
           token=os.environ.get("ADMIN_IMPORT_TOKEN","")
-          if not all([api,site,token]): raise SystemExit("Missing secrets: TRANSCRIPTYT_API_KEY, KNOWLEDGEHUB_URL or ADMIN_IMPORT_TOKEN")
-          if not site.startswith("https://"): raise SystemExit("KNOWLEDGEHUB_URL must be https://")
-          def request(url,headers={},data=None):
-              req=urllib.request.Request(url,data=data,headers=headers,method="POST" if data is not None else "GET")
+          if not all([key,site,token]) or not site.startswith("https://"): raise SystemExit("Missing or invalid GitHub Secrets")
+          maximum=min(88,max(1,int(os.environ.get("MAX_VIDEOS","88"))))
+          def call(url,headers=None,body=None):
+              req=urllib.request.Request(url,headers=headers or {},data=body,method="POST" if body is not None else "GET")
               try:
-                  with urllib.request.urlopen(req,timeout=60) as r: return r.status,json.loads(r.read())
+                  with urllib.request.urlopen(req,timeout=65) as r:return r.status,json.load(r)
               except urllib.error.HTTPError as e:
-                  try: body=json.loads(e.read())
-                  except Exception: body={"error":"HTTP "+str(e.code)}
-                  return e.code,body
-          admin={"Authorization":"Bearer "+token}
-          status,v=request(site+"/api/admin/videos",admin)
-          if status!=200: raise SystemExit("Video listing failed: "+str(status)+" "+str(v)[:250])
-          videos=v.get("videos",[])
-          print("Video metadata fetched:",len(videos))
-          # Read all existing IDs from KnowledgeHub before spending credits.
-          status,readiness=request(site+"/api/admin/transcript-ids",admin)
-          if status!=200: raise SystemExit("Existing transcript check failed (no credits spent): "+str(status))
-          existing=set(readiness.get("video_ids",[]))
-          print("Already saved transcripts (protected):",len(existing))
-          candidates=[x for x in videos if x.get("id") not in existing][:10]
-          print("Selected candidates:",len(candidates))
+                  try: result=json.loads(e.read())
+                  except Exception: result={"error":"HTTP "+str(e.code)}
+                  return e.code,result
+          auth={"Authorization":"Bearer "+token}
+          code,usage=call("https://transcript-yt.com/v1/usage",{"Authorization":"Bearer "+key})
+          if code!=200: raise SystemExit("Could not check credits; aborting before requests: HTTP "+str(code))
+          available=usage.get("credits_remaining")
+          if not isinstance(available,(int,float)): raise SystemExit("Credit balance unknown; aborting")
+          maximum=min(maximum,int(available))
+          print("Credits before:",available,"maximum new requests:",maximum)
+          if maximum<1: raise SystemExit("No credits remaining")
+          code,data=call(site+"/api/admin/videos",auth)
+          if code!=200: raise SystemExit("Video list failed: "+str(code))
+          videos=data.get("videos",[])
+          code,data=call(site+"/api/admin/transcript-ids",auth)
+          if code!=200: raise SystemExit("Existing transcript check failed: "+str(code))
+          existing=set(data.get("video_ids",[]))
+          candidates=[v for v in videos if v.get("id") not in existing]
+          print("Total catalog:",len(videos),"already saved:",len(existing),"candidates:",len(candidates))
           results=[]
-          for video in candidates:
-              vid=video["id"]
-              query=urllib.parse.urlencode({"url":vid,"language":"ru","format":"json","mode":"captions"})
-              code,payload=request("https://transcript-yt.com/v1/transcript?"+query,{"Authorization":"Bearer "+api,"Accept":"application/json"})
-              if code!=200:
-                  results.append({"video_id":vid,"status":"api_error","http":code})
-                  print(vid,"API HTTP",code)
-                  continue
-              segments=payload.get("segments") or []
-              text="\n".join(str(s.get("text","")) for s in segments if isinstance(s,dict))
-              if not text.strip(): text=str(payload.get("text") or "")
-              if payload.get("language")!="ru" or len(text)<50:
-                  results.append({"video_id":vid,"status":"invalid","language":payload.get("language"),"characters":len(text)})
-                  continue
-              body=json.dumps({"video_id":vid,"transcript":text,"source_note":"TranscriptYT API: Russian YouTube captions, automatically imported; usage rights require review"},ensure_ascii=False).encode()
-              code,response=request(site+"/api/admin/transcripts",{"Authorization":"Bearer "+token,"Content-Type":"application/json"},body)
-              results.append({"video_id":vid,"status":"saved" if code==200 else "save_error","http":code,"characters":len(text)})
-              print(vid,"saved" if code==200 else "save error",code,"characters",len(text))
-              time.sleep(1)
-          Path("results").mkdir(exist_ok=True)
-          Path("results/summary.json").write_text(json.dumps(results,ensure_ascii=False,indent=2))
-          print("SUMMARY:",json.dumps({"saved":sum(x["status"]=="saved" for x in results),"failed":sum(x["status"]!="saved" for x in results)},ensure_ascii=False))
+          def checkpoint():
+              Path("results/summary.json").write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding="utf-8")
+          for v in candidates[:maximum]:
+              vid=v["id"]
+              params=urllib.parse.urlencode({"url":vid,"language":"ru","format":"json","mode":"captions"})
+              code,data=call("https://transcript-yt.com/v1/transcript?"+params,{"Authorization":"Bearer "+key,"Accept":"application/json"})
+              item={"video_id":vid,"title":v.get("title","")[:120],"http":code}
+              if code!=200 or not isinstance(data,dict):
+                  item["status"]="transcript_api_error"
+                  item["error"]=str(data.get("error",""))[:150] if isinstance(data,dict) else "invalid_response"
+              else:
+                  segments=data.get("segments") or []
+                  transcript="\n".join(str(s.get("text","")) for s in segments if isinstance(s,dict))
+                  if not transcript.strip(): transcript=str(data.get("text") or "")
+                  item.update(language=data.get("language"),source=data.get("source"),characters=len(transcript),segments=len(segments))
+                  starts=[]
+                  for s in segments:
+                      if isinstance(s,dict):
+                          for field in ("start","start_time","offset"):
+                              try:
+                                  if field in s: starts.append(float(s[field]));break
+                              except (ValueError,TypeError):pass
+                  if starts:item["last_segment_start"]=max(starts)
+                  item["quality_flag"]="review_short_or_sparse" if len(transcript)<2000 or len(segments)<40 else "needs_duration_comparison"
+                  if data.get("language")!="ru" or len(transcript)<50:
+                      item["status"]="invalid_response"
+                  else:
+                      payload={"video_id":vid,"transcript":transcript,"source_note":"TranscriptYT API, Russian YouTube captions; automated import, not verified; usage rights require review"}
+                      code2,res=call(site+"/api/admin/transcripts",{"Authorization":"Bearer "+token,"Content-Type":"application/json"},json.dumps(payload,ensure_ascii=False).encode())
+                      item["save_http"]=code2
+                      item["status"]="saved" if code2==200 else "save_error"
+              results.append(item)
+              checkpoint()
+              print(vid,item["status"],"characters",item.get("characters",0),"quality",item.get("quality_flag","n/a"),flush=True)
+              time.sleep(0.7)
+          code,usage=call("https://transcript-yt.com/v1/usage",{"Authorization":"Bearer "+key})
+          print("Credits after:",usage.get("credits_remaining","unknown") if code==200 else "unknown")
+          print("SUMMARY",json.dumps({"saved":sum(x["status"]=="saved" for x in results),"failed":sum(x["status"]!="saved" for x in results),"flagged":sum(x.get("quality_flag")=="review_short_or_sparse" for x in results)},ensure_ascii=False))
           PY
-      - uses: actions/upload-artifact@v4
+      - name: Upload audit (no transcript text or secrets)
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: knowledgehub-ten-import-summary
+          name: knowledgehub-import-audit
           path: results/summary.json
-          retention-days: 3
+          if-no-files-found: warn
+          retention-days: 7
