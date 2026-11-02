@@ -1,0 +1,48 @@
+name: Test Python YouTube Transcript API
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  transcript-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install transcript library
+        run: python -m pip install --upgrade youtube-transcript-api
+      - name: Check two Russian transcripts
+        shell: bash
+        run: |
+          mkdir -p results
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from youtube_transcript_api import YouTubeTranscriptApi
+          api = YouTubeTranscriptApi()
+          output = []
+          for video_id in ["CYoCBEy5wqU", "QtYfPywblUo"]:
+              item = {"video_id": video_id, "downloaded": False}
+              try:
+                  transcript = api.fetch(video_id, languages=["ru"])
+                  lines = [{"start": s.start, "duration": s.duration, "text": s.text} for s in transcript]
+                  item.update(downloaded=bool(lines), segments=len(lines), language=transcript.language_code, generated=transcript.is_generated)
+                  if lines:
+                      (Path("results") / f"{video_id}.json").write_text(json.dumps(lines, ensure_ascii=False, indent=2), encoding="utf-8")
+              except Exception as exc:
+                  item["error_type"] = type(exc).__name__
+                  item["error"] = str(exc)[:2500]
+              output.append(item)
+              print(json.dumps(item, ensure_ascii=False))
+          Path("results/summary.json").write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+          PY
+      - name: Upload diagnostic results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-transcript-results
+          path: results/
+          retention-days: 3
