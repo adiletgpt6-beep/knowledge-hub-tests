@@ -1,0 +1,70 @@
+name: KnowledgeHub — audit transcripts and prepare AI pilot
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Audit existing transcripts without changing data
+        env:
+          KNOWLEDGEHUB_URL: ${{ secrets.KNOWLEDGEHUB_URL }}
+          ADMIN_IMPORT_TOKEN: ${{ secrets.ADMIN_IMPORT_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os,json,re,hashlib,urllib.request,collections,statistics
+          from pathlib import Path
+          root=Path("results");root.mkdir(exist_ok=True)
+          site=os.environ["KNOWLEDGEHUB_URL"].rstrip("/")
+          token=os.environ["ADMIN_IMPORT_TOKEN"]
+          def get(path):
+              req=urllib.request.Request(site+path,headers={"Authorization":"Bearer "+token})
+              with urllib.request.urlopen(req,timeout=90) as r:return json.load(r)
+          videos=get("/api/admin/videos")["videos"]
+          rows=get("/api/admin/transcript-audit")["transcripts"]
+          byid={v["id"]:v for v in videos}
+          hashes=collections.defaultdict(list)
+          audit=[]
+          for r in rows:
+              t=r.get("transcript") or ""
+              norm=re.sub(r"\s+"," ",t).strip().lower()
+              digest=hashlib.sha256(norm.encode()).hexdigest()
+              hashes[digest].append(r["video_id"])
+              lines=[x.strip() for x in t.splitlines() if x.strip()]
+              audit.append({"video_id":r["video_id"],"title":byid.get(r["video_id"],{}).get("title",""),"url":byid.get(r["video_id"],{}).get("url") or "https://www.youtube.com/watch?v="+r["video_id"],"characters":len(t),"words":len(t.split()),"lines":len(lines),"language":r.get("language"),"verified":r.get("verified"),"sha256":digest,"flags":(["very_short_review" ] if len(t)<2000 else [])+(["empty"] if not norm else [])+(["language_review"] if r.get("language")!="ru" else [])})
+          for x in audit:
+              if len(hashes[x["sha256"]])>1:x["flags"].append("exact_duplicate")
+          audit.sort(key=lambda x:(x["characters"],x["video_id"]))
+          short=[x for x in audit if x["characters"]<2000]
+          medium=[x for x in audit if 2000<=x["characters"]<20000]
+          long=[x for x in audit if x["characters"]>=20000]
+          # Balanced pilot: 3 short, 3 medium, 4 long (as available).
+          selected=(short[:3]+medium[:3]+long[:4])
+          seen={x["video_id"] for x in selected}
+          for x in sorted(audit,key=lambda x:-x["characters"]):
+              if len(selected)>=10:break
+              if x["video_id"] not in seen:selected.append(x);seen.add(x["video_id"])
+          summary={"catalog_videos":len(videos),"saved_transcripts":len(rows),"missing":len(videos)-len(rows),"short_under_2000":len(short),"medium_2000_to_19999":len(medium),"long_20000_plus":len(long),"exact_duplicate_groups":[ids for ids in hashes.values() if len(ids)>1],"unverified":sum(x["verified"] is not True for x in audit),"pilot_video_ids":[x["video_id"] for x in selected]}
+          (root/"audit.json").write_text(json.dumps({"summary":summary,"videos":audit},ensure_ascii=False,indent=2),encoding="utf-8")
+          (root/"pilot_selection.json").write_text(json.dumps(selected,ensure_ascii=False,indent=2),encoding="utf-8")
+          prompt="""# Pilot AI analysis instructions (not yet executed)
+          For each selected video, use ONLY its actual transcript, not the title or assumed content.
+          Return JSON: video_id, main_idea, sales_techniques[{name, explanation, exact_short_evidence, evidence_location}], objection_handling, practical_exercise, uncertainty, transcript_quality_concerns.
+          Evidence must be short exact excerpts present in the transcript; do not fabricate quotations.
+          Separate the speaker's advice from your own suggestions.
+          Then prepare two applications: individual seller learning and team training, including examples for Quran retail ONLY as clearly labeled adaptations, not speaker quotes.
+          Do not publish third-party transcripts. Do not modify the originals. Human review required before operational use.
+          """
+          (root/"PILOT_AI_INSTRUCTIONS.md").write_text(prompt,encoding="utf-8")
+          print("AUDIT SUMMARY",json.dumps(summary,ensure_ascii=False))
+          print("Pilot selected:",",".join(summary["pilot_video_ids"]))
+          print("No transcripts modified; no TranscriptYT requests; no paid AI requests.")
+          PY
+      - name: Upload audit and pilot plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: knowledgehub-audit-pilot
+          path: results/
+          retention-days: 14
