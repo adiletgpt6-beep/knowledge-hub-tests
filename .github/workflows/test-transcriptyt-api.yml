@@ -1,0 +1,65 @@
+name: Test TranscriptYT API (2 videos)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  transcript-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check TranscriptYT Russian captions
+        env:
+          TRANSCRIPTYT_API_KEY: ${{ secrets.TRANSCRIPTYT_API_KEY }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, urllib.parse, urllib.request, urllib.error
+          from pathlib import Path
+          key=os.environ.get("TRANSCRIPTYT_API_KEY","")
+          if not key:
+              raise SystemExit("ERROR: Missing TRANSCRIPTYT_API_KEY repository secret")
+          Path("results").mkdir(exist_ok=True)
+          base="https://transcript-yt.com"
+          def call(path, params=None):
+              url=base+path+("?"+urllib.parse.urlencode(params) if params else "")
+              req=urllib.request.Request(url,headers={"Authorization":"Bearer "+key,"Accept":"application/json"})
+              try:
+                  with urllib.request.urlopen(req,timeout=50) as r:
+                      return r.status,json.load(r)
+              except urllib.error.HTTPError as e:
+                  try: data=json.loads(e.read().decode("utf-8"))
+                  except Exception: data={"error":"HTTP request failed"}
+                  return e.code,data
+          status,usage=call("/v1/usage")
+          print("Usage check HTTP:",status)
+          if status!=200:
+              print("Usage error:",json.dumps(usage,ensure_ascii=False)[:500])
+              raise SystemExit(1)
+          print("Credits before:",usage.get("credits_remaining","unknown"))
+          results=[]
+          for video_id in ["CYoCBEy5wqU","QtYfPywblUo"]:
+              status,data=call("/v1/transcript",{"url":video_id,"language":"ru","format":"json","mode":"captions"})
+              item={"video_id":video_id,"http_status":status,"ok":False}
+              if status==200 and isinstance(data,dict):
+                  segments=data.get("segments") or []
+                  body=data.get("text") or " ".join(str(s.get("text","")) for s in segments if isinstance(s,dict))
+                  item.update(ok=bool(body.strip()),language=data.get("language"),source=data.get("source"),translated=data.get("translated"),segments=len(segments),characters=len(body))
+              else:
+                  err=data.get("error",{}) if isinstance(data,dict) else {}
+                  item["error"]=err.get("code",str(err)) if isinstance(err,dict) else str(err)
+              print("Video result:",json.dumps(item,ensure_ascii=False))
+              results.append(item)
+          status,usage=call("/v1/usage")
+          if status==200: print("Credits after:",usage.get("credits_remaining","unknown"))
+          Path("results/summary.json").write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding="utf-8")
+          if not any(x["ok"] for x in results):
+              raise SystemExit("No Russian captions received; inspect per-video status above")
+          PY
+      - name: Upload diagnostic summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcriptyt-test-summary
+          path: results/summary.json
+          retention-days: 3
