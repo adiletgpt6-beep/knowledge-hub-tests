@@ -70,7 +70,7 @@ jobs:
               if code==429:
                   print("Rate limited: cooling down for 75 seconds before one retry",flush=True)
                   time.sleep(75)
-              code,data=call("https://transcript-yt.com/v1/transcript?"+params,{"Authorization":"Bearer "+key,"Accept":"application/json"})
+                  code,data=call("https://transcript-yt.com/v1/transcript?"+params,{"Authorization":"Bearer "+key,"Accept":"application/json"})
                   last_api_call=time.monotonic()
               item={"video_id":vid,"title":v.get("title","")[:120],"http":code}
               if code!=200 or not isinstance(data,dict):
