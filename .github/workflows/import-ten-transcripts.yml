@@ -1,0 +1,75 @@
+name: KnowledgeHub — test import 10 transcripts
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  import-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Test and import up to 10 missing Russian transcripts
+        env:
+          TRANSCRIPTYT_API_KEY: ${{ secrets.TRANSCRIPTYT_API_KEY }}
+          KNOWLEDGEHUB_URL: ${{ secrets.KNOWLEDGEHUB_URL }}
+          ADMIN_IMPORT_TOKEN: ${{ secrets.ADMIN_IMPORT_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json,os,time,urllib.request,urllib.parse,urllib.error
+          from pathlib import Path
+          api=os.environ.get("TRANSCRIPTYT_API_KEY","")
+          site=os.environ.get("KNOWLEDGEHUB_URL","").rstrip("/")
+          token=os.environ.get("ADMIN_IMPORT_TOKEN","")
+          if not all([api,site,token]): raise SystemExit("Missing secrets: TRANSCRIPTYT_API_KEY, KNOWLEDGEHUB_URL or ADMIN_IMPORT_TOKEN")
+          if not site.startswith("https://"): raise SystemExit("KNOWLEDGEHUB_URL must be https://")
+          def request(url,headers={},data=None):
+              req=urllib.request.Request(url,data=data,headers=headers,method="POST" if data is not None else "GET")
+              try:
+                  with urllib.request.urlopen(req,timeout=60) as r: return r.status,json.loads(r.read())
+              except urllib.error.HTTPError as e:
+                  try: body=json.loads(e.read())
+                  except Exception: body={"error":"HTTP "+str(e.code)}
+                  return e.code,body
+          admin={"Authorization":"Bearer "+token}
+          status,v=request(site+"/api/admin/videos",admin)
+          if status!=200: raise SystemExit("Video listing failed: "+str(status)+" "+str(v)[:250])
+          videos=v.get("videos",[])
+          print("Video metadata fetched:",len(videos))
+          # Existing transcripts are never overwritten. Check by ID using existing readiness endpoint only for first 5;
+          # use Supabase read through a new safe server endpoint before a full run.
+          status,readiness=request(site+"/api/admin/transcript-status",{"Authorization":"Bearer "+token,"Content-Type":"application/json"},b"{}")
+          if status!=200: raise SystemExit("Readiness check failed: "+str(status))
+          existing={r["id"] for r in readiness.get("videos",[]) if r.get("transcript")}
+          print("Existing protected first-five:",len(existing))
+          candidates=[x for x in videos if x.get("id") not in existing][:10]
+          print("Selected candidates:",len(candidates))
+          results=[]
+          for video in candidates:
+              vid=video["id"]
+              query=urllib.parse.urlencode({"url":vid,"language":"ru","format":"json","mode":"captions"})
+              code,payload=request("https://transcript-yt.com/v1/transcript?"+query,{"Authorization":"Bearer "+api,"Accept":"application/json"})
+              if code!=200:
+                  results.append({"video_id":vid,"status":"api_error","http":code})
+                  print(vid,"API HTTP",code)
+                  continue
+              segments=payload.get("segments") or []
+              text="\n".join(str(s.get("text","")) for s in segments if isinstance(s,dict))
+              if not text.strip(): text=str(payload.get("text") or "")
+              if payload.get("language")!="ru" or len(text)<50:
+                  results.append({"video_id":vid,"status":"invalid","language":payload.get("language"),"characters":len(text)})
+                  continue
+              body=json.dumps({"video_id":vid,"transcript":text,"source_note":"TranscriptYT API: Russian YouTube captions, automatically imported; usage rights require review"},ensure_ascii=False).encode()
+              code,response=request(site+"/api/admin/transcripts",{"Authorization":"Bearer "+token,"Content-Type":"application/json"},body)
+              results.append({"video_id":vid,"status":"saved" if code==200 else "save_error","http":code,"characters":len(text)})
+              print(vid,"saved" if code==200 else "save error",code,"characters",len(text))
+              time.sleep(1)
+          Path("results").mkdir(exist_ok=True)
+          Path("results/summary.json").write_text(json.dumps(results,ensure_ascii=False,indent=2))
+          print("SUMMARY:",json.dumps({"saved":sum(x["status"]=="saved" for x in results),"failed":sum(x["status"]!="saved" for x in results)},ensure_ascii=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: knowledgehub-ten-import-summary
+          path: results/summary.json
+          retention-days: 3
