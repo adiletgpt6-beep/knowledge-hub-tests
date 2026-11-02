@@ -1,4 +1,4 @@
-name: Test YouTube subtitles (5 videos)
+name: Test YouTube subtitles with Deno (2 videos)
 on:
   workflow_dispatch:
 permissions:
@@ -8,6 +8,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Check Deno
+        run: deno --version
       - name: Install yt-dlp
         run: python -m pip install --upgrade "yt-dlp[default]"
       - name: Test Russian captions without downloading videos
@@ -17,7 +23,7 @@ jobs:
           ids=(CYoCBEy5wqU QtYfPywblUo)
           for id in "${ids[@]}"; do
             echo "::group::Video $id"
-            yt-dlp --no-playlist --skip-download --write-subs --write-auto-subs --sub-langs "ru,ru-.*" --sub-format "vtt/best" --output "subtitle-test/%(id)s.%(ext)s" --socket-timeout 15 --retries 2 --extractor-retries 2 "https://www.youtube.com/watch?v=$id" 2>&1 | tee "subtitle-test/$id.log" || true
+            yt-dlp --js-runtimes deno --no-playlist --skip-download --write-subs --write-auto-subs --sub-langs "ru,ru-.*" --sub-format "vtt/best" --output "subtitle-test/%(id)s.%(ext)s" --socket-timeout 15 --retries 2 --extractor-retries 2 "https://www.youtube.com/watch?v=$id" 2>&1 | tee "subtitle-test/$id.log" || true
             echo "::endgroup::"
           done
           python - <<'PY'
