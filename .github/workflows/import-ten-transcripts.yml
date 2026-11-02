@@ -67,6 +67,14 @@ jobs:
               if code!=200 or not isinstance(data,dict):
                   item["status"]="transcript_api_error"
                   item["error"]=str(data.get("error",""))[:150] if isinstance(data,dict) else "invalid_response"
+                  print("API error",vid,"HTTP",code,"detail",item["error"],flush=True)
+                  results.append(item)
+                  checkpoint()
+                  if code in (401,402,403,429) or code>=500 or sum(x["status"]=="transcript_api_error" for x in results)>=3:
+                      print("STOP: API errors; do not continue spending requests",flush=True)
+                      break
+                  time.sleep(2)
+                  continue
               else:
                   segments=data.get("segments") or []
                   transcript="\n".join(str(s.get("text","")) for s in segments if isinstance(s,dict))
@@ -91,7 +99,7 @@ jobs:
               results.append(item)
               checkpoint()
               print(vid,item["status"],"characters",item.get("characters",0),"quality",item.get("quality_flag","n/a"),flush=True)
-              time.sleep(0.7)
+              time.sleep(2.5)
           code,usage=call("https://transcript-yt.com/v1/usage",{"Authorization":"Bearer "+key})
           print("Credits after:",usage.get("credits_remaining","unknown") if code==200 else "unknown")
           print("SUMMARY",json.dumps({"saved":sum(x["status"]=="saved" for x in results),"failed":sum(x["status"]!="saved" for x in results),"flagged":sum(x.get("quality_flag")=="review_short_or_sparse" for x in results)},ensure_ascii=False))
