@@ -59,10 +59,19 @@ jobs:
           results=[]
           def checkpoint():
               Path("results/summary.json").write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding="utf-8")
+          last_api_call=0.0
           for v in candidates[:maximum]:
               vid=v["id"]
               params=urllib.parse.urlencode({"url":vid,"language":"ru","format":"json","mode":"captions"})
+              wait=max(0,8.0-(time.monotonic()-last_api_call))
+              if wait: time.sleep(wait)
               code,data=call("https://transcript-yt.com/v1/transcript?"+params,{"Authorization":"Bearer "+key,"Accept":"application/json"})
+              last_api_call=time.monotonic()
+              if code==429:
+                  print("Rate limited: cooling down for 75 seconds before one retry",flush=True)
+                  time.sleep(75)
+              code,data=call("https://transcript-yt.com/v1/transcript?"+params,{"Authorization":"Bearer "+key,"Accept":"application/json"})
+                  last_api_call=time.monotonic()
               item={"video_id":vid,"title":v.get("title","")[:120],"http":code}
               if code!=200 or not isinstance(data,dict):
                   item["status"]="transcript_api_error"
@@ -99,7 +108,7 @@ jobs:
               results.append(item)
               checkpoint()
               print(vid,item["status"],"characters",item.get("characters",0),"quality",item.get("quality_flag","n/a"),flush=True)
-              time.sleep(2.5)
+              time.sleep(1)
           code,usage=call("https://transcript-yt.com/v1/usage",{"Authorization":"Bearer "+key})
           print("Credits after:",usage.get("credits_remaining","unknown") if code==200 else "unknown")
           print("SUMMARY",json.dumps({"saved":sum(x["status"]=="saved" for x in results),"failed":sum(x["status"]!="saved" for x in results),"flagged":sum(x.get("quality_flag")=="review_short_or_sparse" for x in results)},ensure_ascii=False))
