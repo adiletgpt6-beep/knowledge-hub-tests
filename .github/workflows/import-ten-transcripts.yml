@@ -35,12 +35,11 @@ jobs:
           if status!=200: raise SystemExit("Video listing failed: "+str(status)+" "+str(v)[:250])
           videos=v.get("videos",[])
           print("Video metadata fetched:",len(videos))
-          # Existing transcripts are never overwritten. Check by ID using existing readiness endpoint only for first 5;
-          # use Supabase read through a new safe server endpoint before a full run.
-          status,readiness=request(site+"/api/admin/transcript-status",{"Authorization":"Bearer "+token,"Content-Type":"application/json"},b"{}")
-          if status!=200: raise SystemExit("Readiness check failed: "+str(status))
-          existing={r["id"] for r in readiness.get("videos",[]) if r.get("transcript")}
-          print("Existing protected first-five:",len(existing))
+          # Read all existing IDs from KnowledgeHub before spending credits.
+          status,readiness=request(site+"/api/admin/transcript-ids",admin)
+          if status!=200: raise SystemExit("Existing transcript check failed (no credits spent): "+str(status))
+          existing=set(readiness.get("video_ids",[]))
+          print("Already saved transcripts (protected):",len(existing))
           candidates=[x for x in videos if x.get("id") not in existing][:10]
           print("Selected candidates:",len(candidates))
           results=[]
