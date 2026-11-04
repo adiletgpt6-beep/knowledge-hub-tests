@@ -1,0 +1,34 @@
+name: KnowledgeHub — import paid captions safely
+on:
+  workflow_dispatch:
+    inputs:
+      max_videos:
+        description: "Maximum new requests this run (first run: 10; later: 100-200)"
+        required: true
+        default: "10"
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: knowledgehub-transcript-import
+  cancel-in-progress: false
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Import missing Russian captions
+        env:
+          TRANSCRIPTYT_API_KEY: ${{ secrets.TRANSCRIPTYT_API_KEY }}
+          KNOWLEDGEHUB_URL: ${{ secrets.KNOWLEDGEHUB_URL }}
+          ADMIN_IMPORT_TOKEN: ${{ secrets.ADMIN_IMPORT_TOKEN }}
+          MAX_VIDEOS: ${{ inputs.max_videos }}
+        run: python scripts/import_paid_captions.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paid-captions-import-${{ github.run_id }}
+          path: results/
+          if-no-files-found: warn
