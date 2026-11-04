@@ -1,9 +1,13 @@
 name: KnowledgeHub — import paid captions safely
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/import-paid-captions.yml
   workflow_dispatch:
     inputs:
       max_videos:
-        description: "Maximum new requests this run (first run: 10; later: 100-200)"
+        description: "Maximum new requests this run"
         required: true
         default: "10"
         type: string
@@ -23,7 +27,7 @@ jobs:
           TRANSCRIPTYT_API_KEY: ${{ secrets.TRANSCRIPTYT_API_KEY }}
           KNOWLEDGEHUB_URL: ${{ secrets.KNOWLEDGEHUB_URL }}
           ADMIN_IMPORT_TOKEN: ${{ secrets.ADMIN_IMPORT_TOKEN }}
-          MAX_VIDEOS: ${{ inputs.max_videos }}
+          MAX_VIDEOS: ${{ github.event_name == 'push' && '707' || inputs.max_videos }}
         run: python scripts/import_paid_captions.py
       - name: Upload results
         if: always()
