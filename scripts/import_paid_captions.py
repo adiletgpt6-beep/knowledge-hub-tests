@@ -54,7 +54,7 @@ for v in candidates[:maximum]:
         item["error"]=str(data.get("error",""))[:150] if isinstance(data,dict) else "invalid response"
         results.append(item);checkpoint()
         print(vid,item["status"],code,flush=True)
-        if code in (401,402,403,429) or code>=500 or sum(x["status"]=="api_error" for x in results)>=3:break
+        if code in (401,402,403,429) or code>=500 or sum(x["status"]=="api_error" and x["http"]!=404 for x in results)>=3:break
         continue
     segments=data.get("segments") or []
     transcript="\n".join(str(s.get("text","")) for s in segments if isinstance(s,dict))
