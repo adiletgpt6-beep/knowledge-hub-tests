@@ -27,7 +27,7 @@ jobs:
           TRANSCRIPTYT_API_KEY: ${{ secrets.TRANSCRIPTYT_API_KEY }}
           KNOWLEDGEHUB_URL: ${{ secrets.KNOWLEDGEHUB_URL }}
           ADMIN_IMPORT_TOKEN: ${{ secrets.ADMIN_IMPORT_TOKEN }}
-          MAX_VIDEOS: ${{ github.event_name == 'push' && '707' || inputs.max_videos }}
+          MAX_VIDEOS: ${{ github.event_name == 'push' && '452' || inputs.max_videos }}
         run: python scripts/import_paid_captions.py
       - name: Upload results
         if: always()
